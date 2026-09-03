@@ -34,6 +34,17 @@ func main() {
 	}
 }
 
+// listen binds the service's TCP listener.
+//
+// The address is ":port", never "0.0.0.0:port". Railway's private network is
+// IPv6-only, so binding the IPv4 wildcard leaves the service unreachable at
+// <service>.railway.internal while still answering fine on the public domain
+// -- a failure that looks like healthy deploy plus broken callers. The empty
+// host requests the unspecified address, which listens on both families.
+func listen(port string) (net.Listener, error) {
+	return net.Listen("tcp", ":"+port)
+}
+
 func run(log *slog.Logger) error {
 	cfg, err := LoadConfig(os.Getenv)
 	if err != nil {
@@ -49,11 +60,7 @@ func run(log *slog.Logger) error {
 
 	st := NewStore(rdb, cfg.StateKey, log)
 
-	// Listen on ":port" rather than "0.0.0.0:port". Railway's private
-	// network is IPv6-only, so binding the IPv4 wildcard would leave the
-	// service unreachable at <service>.railway.internal while still
-	// looking healthy on the public domain.
-	ln, err := net.Listen("tcp", ":"+cfg.Port)
+	ln, err := listen(cfg.Port)
 	if err != nil {
 		return err
 	}
