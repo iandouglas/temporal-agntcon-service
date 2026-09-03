@@ -1,0 +1,11 @@
+# Compiled binary
+/svc
+/service
+
+# Go test/coverage artifacts
+*.out
+*.test
+
+# Local env overrides
+.env
+.env.local
