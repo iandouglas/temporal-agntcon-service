@@ -232,12 +232,16 @@ func TestRegressionHotPathIsAllocationFree(t *testing.T) {
 // TestRegressionListenerAcceptsIPv6 pins the Railway private-network
 // invariant.
 //
-// Railway's private network is IPv6-only. Binding "0.0.0.0:port" instead of
-// ":port" produces a service that passes its health check and answers on the
-// public domain while being completely unreachable at
-// <service>.railway.internal -- so callers fail and the service looks fine.
-// This is a one-character mistake with no local symptom, which is exactly why
-// it is worth a test.
+// Railway's private network is IPv6-only, so a listener that does not accept
+// IPv6 produces a service that passes its health check and answers on its
+// public domain while being unreachable at <service>.railway.internal. Every
+// caller fails and the service looks fine, which is why this is worth pinning
+// rather than trusting to review.
+//
+// Verified to fail if listen switches to network "tcp4", or to a literal host
+// such as 127.0.0.1. Note it does not fail for "0.0.0.0:port", because Go
+// treats that as the unspecified address and still opens a dual-stack socket
+// -- unlike Node or Python, where the same bind really is IPv4-only.
 func TestRegressionListenerAcceptsIPv6(t *testing.T) {
 	if probe, err := net.Listen("tcp", "[::1]:0"); err != nil {
 		t.Skip("no IPv6 loopback on this machine")

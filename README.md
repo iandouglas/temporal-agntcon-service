@@ -148,10 +148,29 @@ them, and wipe the state you just set. `/health` reports business state;
 **Callers must use the private network.** Have Temporal workers hit
 `http://taco.railway.internal:8080/taco`, not the public domain. The public
 domain adds a TLS handshake and an edge-proxy hop — tens of milliseconds — which
-completely dominates a request path that is otherwise ~17ns of work. The service
-binds `:$PORT` (dual-stack) rather than `0.0.0.0:$PORT`, because Railway's
-private network is IPv6-only and binding the IPv4 wildcard would leave the
-service unreachable internally while still looking fine publicly.
+completely dominates a request path that is otherwise ~17ns of work.
+
+Railway's private network is **IPv6-only**, so the listener has to accept IPv6
+or the service ends up unreachable internally while still looking perfectly
+healthy on its public domain. `net.Listen("tcp", ":"+port)` is what guarantees
+this: with network `tcp` and an unspecified host, Go opens an `AF_INET6` socket
+with `V6ONLY` off, covering both families.
+
+What breaks it is `tcp4` as the network, or a literal host such as
+`127.0.0.1`. Worth stating plainly because the usual advice for other runtimes
+does not apply here: `0.0.0.0:$PORT` is *also* fine in Go, which treats it as
+the unspecified address, whereas in Node or Python that same bind really is
+IPv4-only. Verified:
+
+| `net.Listen` | Bound address | IPv4 | IPv6 |
+|---|---|---|---|
+| `"tcp", ":8080"` | `[::]:8080` | ok | ok |
+| `"tcp", "0.0.0.0:8080"` | `[::]:8080` | ok | ok |
+| `"tcp4", ":8080"` | `0.0.0.0:8080` | ok | **refused** |
+| `"tcp", "127.0.0.1:8080"` | `127.0.0.1:8080` | ok | **refused** |
+
+`TestRegressionListenerAcceptsIPv6` pins this by dialling the live listener
+over both families.
 
 ## How state stays consistent
 
@@ -253,13 +272,64 @@ curl -s localhost:9103/health           # all three agree
 ## Tests
 
 ```bash
-go test ./...                       # unit and integration
-go test -race ./...                 # race detector
-go test -run '^$' -bench . -benchmem # benchmarks
+go test ./...                        # everything
+go test -race ./...                  # race detector
+go test -run Regression ./...         # invariants only
+go test -run E2E ./...                # fleet over real HTTP
+go test -run '^$' -bench . -benchmem  # benchmarks
 ```
 
 Tests use `miniredis`, so the pub/sub loop, the reconcile backstop, and the
 Redis-outage paths are all exercised without a live Redis.
+
+Four layers:
+
+| File | Scope |
+|---|---|
+| `config_test.go` | Env parsing, key derivation, fail-fast validation |
+| `state_test.go` | Replication, reconcile, reseed, Redis-outage behaviour |
+| `server_test.go` | HTTP contract per handler, plus hot-path benchmarks |
+| `e2e_test.go` | A 3-replica fleet driven over real HTTP against one Redis |
+| `regression_test.go` | Named invariants that must not regress |
+
+### Regression tests
+
+`regression_test.go` is named by *failure mode* rather than by function, so a
+failure tells you what will break in production. Each entry guards something
+that has either already broken once or would be painful to diagnose live:
+
+| Test | Failure it prevents |
+|---|---|
+| `HealthNeverReturnsNonSuccess` | Railway restarting every replica when you call `/off` |
+| `ReadyIsSeparateFromHealth` | The same, via `/ready` following the toggle |
+| `ReseedPreservesLastKnownState` | A wiped Redis silently turning an off demo back on |
+| `StrandedReplicaRecoversWithinOneRetryCycle` | A keep-alive-pinned caller stuck against a replica that missed a broadcast |
+| `FailedToggleDoesNotDiverge` | A toggle appearing to work, then reverting itself |
+| `OffPathStaysCheap` | A body creeping onto the sustained-load path |
+| `HotPathIsAllocationFree` | A `Sprintf` or `json.Marshal` quietly entering the request path |
+| `ListenerAcceptsIPv6` | A service unreachable on Railway's private network but healthy publicly |
+| `ConfigRefusesToBootMisconfigured` | A replica that boots fine and shares state with nothing |
+| `ReservedPathsMatchRoutes` | `ENDPOINT` shadowing a control route |
+
+These were verified by mutation testing — each defect was reintroduced and the
+corresponding test confirmed to fail:
+
+| Reintroduced defect | Caught by |
+|---|---|
+| `/health` returns 503 when off | `HealthNeverReturnsNonSuccess` |
+| Reseed uses the boot default | `ReseedPreservesLastKnownState` |
+| Reconcile loop removed | `StrandedReplicaRecoversWithinOneRetryCycle` |
+| Extra copy on the hot path | `HotPathIsAllocationFree` |
+| Failed toggle applied locally | `FailedToggleDoesNotDiverge` |
+| Body added to the 500 path | `OffPathStaysCheap`, `E2EContract` |
+| `listen` uses `tcp4` | `ListenerAcceptsIPv6` |
+| `listen` uses a literal `127.0.0.1` | `ListenerAcceptsIPv6` |
+| `/health` dropped from `reservedPaths` | `ConfigRefusesToBootMisconfigured` |
+
+`TestE2EContract` pins the exact wire format — status codes and bodies for
+every route in both states. Change a response shape and it fails loudly,
+rather than breaking the control system or Temporal's retry handling at
+runtime.
 
 ## Logging
 

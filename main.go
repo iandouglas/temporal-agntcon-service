@@ -34,13 +34,19 @@ func main() {
 	}
 }
 
-// listen binds the service's TCP listener.
+// listen binds the service's TCP listener on both address families.
 //
-// The address is ":port", never "0.0.0.0:port". Railway's private network is
-// IPv6-only, so binding the IPv4 wildcard leaves the service unreachable at
-// <service>.railway.internal while still answering fine on the public domain
-// -- a failure that looks like healthy deploy plus broken callers. The empty
-// host requests the unspecified address, which listens on both families.
+// Railway's private network is IPv6-only, so a listener that is not reachable
+// over IPv6 leaves the service unreachable at <service>.railway.internal
+// while still answering fine on the public domain -- a deploy that looks
+// healthy with every caller broken.
+//
+// The network must stay "tcp" and the host must stay empty. Go opens an
+// AF_INET6 socket with V6ONLY off whenever the network is "tcp" and the host
+// is the unspecified address, which covers both families. Passing "tcp4", or
+// any literal host such as 127.0.0.1, drops IPv6 and causes exactly that
+// failure. ("0.0.0.0" happens to be safe here, since Go also treats it as
+// unspecified, but the empty host says what is meant.)
 func listen(port string) (net.Listener, error) {
 	return net.Listen("tcp", ":"+port)
 }
