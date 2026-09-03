@@ -195,14 +195,24 @@ func (s *Store) reconcile(ctx context.Context) {
 			readCtx, cancel := context.WithTimeout(ctx, redisOpTimeout)
 			on, err := s.Fetch(readCtx)
 			cancel()
-			if err != nil {
+
+			switch {
+			case err == nil:
+				s.apply(on, "reconcile")
+			case errors.Is(err, redis.Nil):
+				// Redis is reachable but the key is gone: the
+				// instance was wiped, restarted without
+				// persistence, or the key was evicted. Nothing
+				// else would ever re-create it, so without
+				// this the whole fleet would report stale
+				// indefinitely against a healthy Redis.
+				s.reseed(ctx)
+			default:
 				// Deliberately not logged: a Redis outage would
 				// emit four lines per second per replica and
 				// bury the state timeline. Staleness surfaces
 				// on /health instead.
-				continue
 			}
-			s.apply(on, "reconcile")
 		}
 	}
 }
@@ -214,6 +224,28 @@ func (s *Store) reconcile(ctx context.Context) {
 func (s *Store) apply(on bool, src string) {
 	if s.on.Swap(on) != on {
 		s.log.Info("state changed", "on", on, "src", src)
+	}
+}
+
+// reseed restores a vanished key from this replica's last-known state.
+//
+// Every replica races to do this and SetNX makes all but the first a no-op,
+// so the fleet converges on whichever value lands first. Since they were all
+// in agreement before the key disappeared, that value is the state the demo
+// was actually in.
+func (s *Store) reseed(ctx context.Context) {
+	on := s.on.Load()
+
+	writeCtx, cancel := context.WithTimeout(ctx, redisOpTimeout)
+	defer cancel()
+
+	seeded, err := s.rdb.SetNX(writeCtx, s.key, encode(on), 0).Result()
+	if err != nil {
+		return
+	}
+	if seeded {
+		s.log.Warn("state key was missing from Redis, reseeded",
+			"key", s.key, "on", on)
 	}
 }
 

@@ -247,3 +247,40 @@ func TestDecodeAcceptsCommonEncodings(t *testing.T) {
 		t.Error("decode should reject an unrecognised value")
 	}
 }
+
+func TestStoreReseedsAfterRedisIsWiped(t *testing.T) {
+	// A Redis restart without persistence leaves the key absent while
+	// Redis itself is perfectly healthy. Nothing else re-creates the key,
+	// so without reseeding the whole fleet would report stale forever.
+	st, mr, _ := newTestStore(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.Run(ctx)
+	waitFor(t, "ready", st.Ready)
+
+	if err := st.Set(ctx, false); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	mr.Del("toggle:test")
+
+	waitFor(t, "key to be reseeded", func() bool {
+		_, err := mr.Get("toggle:test")
+		return err == nil
+	})
+
+	// The reseeded value must be the fleet's last-known state, not the
+	// boot default, or a wipe would silently turn the demo back on.
+	got, err := mr.Get("toggle:test")
+	if err != nil {
+		t.Fatalf("key absent after reseed: %v", err)
+	}
+	if got != redisOff {
+		t.Errorf("reseeded value = %q, want %q (last-known state)", got, redisOff)
+	}
+
+	if _, err := st.Fetch(ctx); err != nil {
+		t.Errorf("Fetch should succeed after reseed: %v", err)
+	}
+}
