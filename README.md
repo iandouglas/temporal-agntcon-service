@@ -354,3 +354,15 @@ drained         elapsed=144µs
 `pubsub` (broadcast from a sibling), `reconcile` (repaired by the poll), or
 `initial` (startup sync). A replica receiving the broadcast of a change it made
 itself logs nothing, since only genuine transitions are recorded.
+
+## Part of the AgntCon / MCPCon 2026 Demo
+
+This is one piece of a larger demo. Start at
+[temporal-agntcon-devnotes](https://github.com/iandouglas/temporal-agntcon-devnotes)
+for how the pieces fit together, and
+[RAILWAY.md](https://github.com/iandouglas/temporal-agntcon-devnotes/blob/main/RAILWAY.md)
+to deploy them.
+
+## License
+
+[MIT](LICENSE)
